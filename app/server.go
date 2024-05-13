@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"net"
@@ -12,19 +13,33 @@ type HTTPResponse struct {
 	version string
 	status  int
 	reason  string
+	headers map[string]string
+	body string
 }
 
-func (h HTTPResponse) String() string {
+func (h HTTPResponse) Bytes() []byte {
 	if h.version == "" {
 		h.version = "HTTP/1.1"
 	}
 
-	result := fmt.Sprintf("%s %d", h.version, h.status)
+	var result bytes.Buffer
+	result.WriteString(fmt.Sprintf("%s %d", h.version, h.status))
 	if h.reason != "" {
-		result = fmt.Sprintf("%s %s", result, h.reason)
+		result.WriteString(" ")
+		result.WriteString(h.reason)
 	}
-	result += "\r\n\r\n"
-	return result
+	result.WriteString("\r\n")
+
+	for header, val := range h.headers {
+		result.WriteString(header)
+		result.WriteString(": ")
+		result.WriteString(val)
+		result.WriteString("\r\n")
+	}
+	result.WriteString("\r\n")
+
+	result.WriteString(h.body)
+	return result.Bytes()
 }
 
 func main() {
@@ -56,11 +71,18 @@ func main() {
 	startLine := scanner.Text()
 	sl := strings.Split(startLine, " ")
 	requestPath := sl[1]
-	if requestPath != "/" {
-		response := HTTPResponse{"HTTP/1.1", 404, "Not Found"}
-		conn.Write([]byte(response.String()))
+	 if strings.HasPrefix(requestPath, "/echo/") {
+		arg := requestPath[len("/echo/"):]
+		headers := make(map[string]string, 2)
+		headers["Content-Type"] = "text/plain"
+		headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
+		response := HTTPResponse{status: 200, headers: headers, body: arg}
+		conn.Write(response.Bytes())
+	} else if requestPath != "/" {
+		response := HTTPResponse{status: 404, reason: "Not Found"}
+		conn.Write([]byte(response.Bytes()))
 	} else {
-		okResponse := HTTPResponse{"HTTP/1.1", 200, "OK"}
-		conn.Write([]byte(okResponse.String()))
+		okResponse := HTTPResponse{status: 200, reason: "OK"}
+		conn.Write(okResponse.Bytes())
 	}
 }
