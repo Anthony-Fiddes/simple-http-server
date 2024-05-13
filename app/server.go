@@ -15,14 +15,14 @@ import (
 	"strings"
 )
 
-type HTTPResponseHeader struct {
+type HTTPResponseHead struct {
 	version string
 	status  int
 	reason  string
 	headers map[string]string
 }
 
-func (h HTTPResponseHeader) Bytes() []byte {
+func (h HTTPResponseHead) Bytes() []byte {
 	if h.version == "" {
 		h.version = "HTTP/1.1"
 	}
@@ -46,8 +46,8 @@ func (h HTTPResponseHeader) Bytes() []byte {
 	return result.Bytes()
 }
 
-var okResponse = HTTPResponseHeader{status: 200, reason: "OK"}
-var notFoundResponse = HTTPResponseHeader{status: 404, reason: "Not found"}
+var okResponse = HTTPResponseHead{status: 200, reason: "OK"}
+var notFoundResponse = HTTPResponseHead{status: 404, reason: "Not found"}
 
 func handleRequest(conn net.Conn, directory string) error {
 	scanner := bufio.NewScanner(conn)
@@ -82,9 +82,9 @@ func handleRequest(conn net.Conn, directory string) error {
 		headers := make(map[string]string, 2)
 		headers["Content-Type"] = "text/plain"
 		headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
-		response := okResponse
-		response.headers = headers
-		_, err := conn.Write(response.Bytes())
+		responseHead := okResponse
+		responseHead.headers = headers
+		_, err := conn.Write(responseHead.Bytes())
 		if err != nil {
 			return err
 		}
@@ -95,23 +95,25 @@ func handleRequest(conn net.Conn, directory string) error {
 	} else if strings.HasPrefix(requestPath, "/files/") {
 		fileName := requestPath[len("/files/"):]
 		file, err := os.Open(path.Join(directory, fileName))
+		if errors.Is(err, fs.ErrNotExist) {
+			conn.Write(notFoundResponse.Bytes())
+			return nil
+		}
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				conn.Write(notFoundResponse.Bytes())
-				return nil
-			}
 			return err
 		}
+		defer file.Close()
 		stats, err := os.Stat(fileName)
 		if err != nil {
 			return err
 		}
+
 		headers := make(map[string]string, 2)
 		headers["Content-Type"] = "application/octet-stream"
 		headers["Content-Length"] = fmt.Sprintf("%d", stats.Size())
-		response := okResponse
-		response.headers = headers
-		_, err = conn.Write(response.Bytes())
+		responseHead := okResponse
+		responseHead.headers = headers
+		_, err = conn.Write(responseHead.Bytes())
 		if err != nil {
 			return err
 		}
@@ -125,9 +127,9 @@ func handleRequest(conn net.Conn, directory string) error {
 		headers := make(map[string]string, 2)
 		headers["Content-Type"] = "text/plain"
 		headers["Content-Length"] = fmt.Sprintf("%d", len(userAgent))
-		response := okResponse
-		response.headers = headers
-		_, err := conn.Write(response.Bytes())
+		responseHead := okResponse
+		responseHead.headers = headers
+		_, err := conn.Write(responseHead.Bytes())
 		if err != nil {
 			return err
 		}
