@@ -24,8 +24,8 @@ func (h HTTPResponse) Bytes() []byte {
 
 	var result bytes.Buffer
 	result.WriteString(fmt.Sprintf("%s %d", h.version, h.status))
+	result.WriteString(" ")
 	if h.reason != "" {
-		result.WriteString(" ")
 		result.WriteString(h.reason)
 	}
 	result.WriteString("\r\n")
