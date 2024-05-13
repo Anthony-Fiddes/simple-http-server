@@ -76,7 +76,7 @@ func main() {
 		headers := make(map[string]string, 2)
 		headers["Content-Type"] = "text/plain"
 		headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
-		response := HTTPResponse{status: 200, headers: headers, body: arg}
+		response := HTTPResponse{status: 200, reason: "OK", headers: headers, body: arg}
 		conn.Write(response.Bytes())
 	} else if requestPath != "/" {
 		response := HTTPResponse{status: 404, reason: "Not Found"}
