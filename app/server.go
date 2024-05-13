@@ -68,11 +68,25 @@ func main() {
 	if !scanner.Scan() {
 		log.Panic("Could not read from connection: ", scanner.Err())
 	}
-
 	// startLine would look like "GET /index.html HTTP/1.1"
 	startLine := scanner.Text()
 	sl := strings.Split(startLine, " ")
 	requestPath := sl[1]
+
+	headers := make(map[string]string)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// there are no more headers to read
+		if line == "" {
+			break
+		}
+
+		h := strings.Split(line, ": ")
+		key := h[0]
+		value := h[1]
+		headers[key] = value
+	}
+
 	if strings.HasPrefix(requestPath, "/echo/") {
 		arg := requestPath[len("/echo/"):]
 		headers := make(map[string]string, 2)
@@ -81,6 +95,16 @@ func main() {
 		response := okResponse
 		response.headers = headers
 		response.body = arg
+		conn.Write(response.Bytes())
+	} else if requestPath == "/user-agent" {
+		// it's okay if it's not in headers, we'll just get ""
+		userAgent := headers["User-Agent"]
+		headers := make(map[string]string, 2)
+		headers["Content-Type"] = "text/plain"
+		headers["Content-Length"] = fmt.Sprintf("%d", len(userAgent))
+		response := okResponse
+		response.headers = headers
+		response.body = userAgent
 		conn.Write(response.Bytes())
 	} else if requestPath == "/" {
 		conn.Write(okResponse.Bytes())
