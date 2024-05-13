@@ -47,7 +47,7 @@ func (h HTTPResponseHead) Bytes() []byte {
 }
 
 var okResponse = HTTPResponseHead{status: 200, reason: "OK"}
-var notFoundResponse = HTTPResponseHead{status: 404, reason: "Not found"}
+var notFoundResponse = HTTPResponseHead{status: 404, reason: "Not Found"}
 
 func handleRequest(conn net.Conn, directory string) error {
 	scanner := bufio.NewScanner(conn)
@@ -94,8 +94,8 @@ func handleRequest(conn net.Conn, directory string) error {
 		}
 	} else if strings.HasPrefix(requestPath, "/files/") {
 		fileName := requestPath[len("/files/"):]
-		fileName = path.Join(directory, fileName)
-		file, err := os.Open(fileName)
+		filePath := path.Join(directory, fileName)
+		file, err := os.Open(filePath)
 		if errors.Is(err, fs.ErrNotExist) {
 			conn.Write(notFoundResponse.Bytes())
 			return nil
@@ -104,7 +104,7 @@ func handleRequest(conn net.Conn, directory string) error {
 			return err
 		}
 		defer file.Close()
-		stats, err := os.Stat(fileName)
+		stats, err := os.Stat(filePath)
 		if err != nil {
 			return err
 		}
