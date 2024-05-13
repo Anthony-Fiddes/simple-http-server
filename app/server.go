@@ -3,21 +3,26 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net"
+	"os"
+	"path"
 	"strings"
 )
 
-type HTTPResponse struct {
+type HTTPResponseHeader struct {
 	version string
 	status  int
 	reason  string
 	headers map[string]string
-	body    string
 }
 
-func (h HTTPResponse) Bytes() []byte {
+func (h HTTPResponseHeader) Bytes() []byte {
 	if h.version == "" {
 		h.version = "HTTP/1.1"
 	}
@@ -38,13 +43,13 @@ func (h HTTPResponse) Bytes() []byte {
 	}
 	result.WriteString("\r\n")
 
-	result.WriteString(h.body)
 	return result.Bytes()
 }
 
-var okResponse = HTTPResponse{status: 200, reason: "OK"}
+var okResponse = HTTPResponseHeader{status: 200, reason: "OK"}
+var notFoundResponse = HTTPResponseHeader{status: 404, reason: "Not found"}
 
-func handleRequest(conn net.Conn) error {
+func handleRequest(conn net.Conn, directory string) error {
 	scanner := bufio.NewScanner(conn)
 	// we should be able to scan at least one line
 	if !scanner.Scan() {
@@ -79,8 +84,41 @@ func handleRequest(conn net.Conn) error {
 		headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
 		response := okResponse
 		response.headers = headers
-		response.body = arg
-		conn.Write(response.Bytes())
+		_, err := conn.Write(response.Bytes())
+		if err != nil {
+			return err
+		}
+		_, err = conn.Write([]byte(arg))
+		if err != nil {
+			return err
+		}
+	} else if strings.HasPrefix(requestPath, "/files/") {
+		fileName := requestPath[len("/files/"):]
+		file, err := os.Open(path.Join(directory, fileName))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				conn.Write(notFoundResponse.Bytes())
+				return nil
+			}
+			return err
+		}
+		stats, err := os.Stat(fileName)
+		if err != nil {
+			return err
+		}
+		headers := make(map[string]string, 2)
+		headers["Content-Type"] = "application/octet-stream"
+		headers["Content-Length"] = fmt.Sprintf("%d", stats.Size())
+		response := okResponse
+		response.headers = headers
+		_, err = conn.Write(response.Bytes())
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(conn, file)
+		if err != nil {
+			return err
+		}
 	} else if requestPath == "/user-agent" {
 		// it's okay if it's not in headers, we'll just get ""
 		userAgent := headers["User-Agent"]
@@ -89,18 +127,32 @@ func handleRequest(conn net.Conn) error {
 		headers["Content-Length"] = fmt.Sprintf("%d", len(userAgent))
 		response := okResponse
 		response.headers = headers
-		response.body = userAgent
-		conn.Write(response.Bytes())
+		_, err := conn.Write(response.Bytes())
+		if err != nil {
+			return err
+		}
+		_, err = conn.Write([]byte(userAgent))
+		if err != nil {
+			return err
+		}
 	} else if requestPath == "/" {
-		conn.Write(okResponse.Bytes())
+		_, err := conn.Write(okResponse.Bytes())
+		if err != nil {
+			return err
+		}
 	} else {
-		response := HTTPResponse{status: 404, reason: "Not Found"}
-		conn.Write([]byte(response.Bytes()))
+		_, err := conn.Write(notFoundResponse.Bytes())
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func main() {
+	directory := flag.String("directory", ".", "Directory to serve.")
+	flag.Parse()
+
 	l, err := net.Listen("tcp", "0.0.0.0:4221")
 	if err != nil {
 		log.Fatal("Failed to bind to port 4221")
@@ -119,7 +171,7 @@ func main() {
 
 		go func() {
 			defer conn.Close()
-			err := handleRequest(conn)
+			err := handleRequest(conn, *directory)
 			if err != nil {
 				log.Printf("Error handling request: %s", err)
 			}
