@@ -94,7 +94,8 @@ func handleRequest(conn net.Conn, directory string) error {
 		}
 	} else if strings.HasPrefix(requestPath, "/files/") {
 		fileName := requestPath[len("/files/"):]
-		file, err := os.Open(path.Join(directory, fileName))
+		fileName = path.Join(directory, fileName)
+		file, err := os.Open(fileName)
 		if errors.Is(err, fs.ErrNotExist) {
 			conn.Write(notFoundResponse.Bytes())
 			return nil
