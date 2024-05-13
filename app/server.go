@@ -14,7 +14,7 @@ type HTTPResponse struct {
 	status  int
 	reason  string
 	headers map[string]string
-	body string
+	body    string
 }
 
 func (h HTTPResponse) Bytes() []byte {
@@ -41,6 +41,8 @@ func (h HTTPResponse) Bytes() []byte {
 	result.WriteString(h.body)
 	return result.Bytes()
 }
+
+var okResponse = HTTPResponse{status: 200, reason: "OK"}
 
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -71,18 +73,19 @@ func main() {
 	startLine := scanner.Text()
 	sl := strings.Split(startLine, " ")
 	requestPath := sl[1]
-	 if strings.HasPrefix(requestPath, "/echo/") {
+	if strings.HasPrefix(requestPath, "/echo/") {
 		arg := requestPath[len("/echo/"):]
 		headers := make(map[string]string, 2)
 		headers["Content-Type"] = "text/plain"
 		headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
-		response := HTTPResponse{status: 200, reason: "OK", headers: headers, body: arg}
+		response := okResponse
+		response.headers = headers
+		response.body = arg
 		conn.Write(response.Bytes())
-	} else if requestPath != "/" {
+	} else if requestPath == "/" {
+		conn.Write(okResponse.Bytes())
+	} else {
 		response := HTTPResponse{status: 404, reason: "Not Found"}
 		conn.Write([]byte(response.Bytes()))
-	} else {
-		okResponse := HTTPResponse{status: 200, reason: "OK"}
-		conn.Write(okResponse.Bytes())
 	}
 }
