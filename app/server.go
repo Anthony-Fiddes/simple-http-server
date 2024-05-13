@@ -44,29 +44,11 @@ func (h HTTPResponse) Bytes() []byte {
 
 var okResponse = HTTPResponse{status: 200, reason: "OK"}
 
-func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	log.Print("Logs from your program will appear here!")
-
-	l, err := net.Listen("tcp", "0.0.0.0:4221")
-	if err != nil {
-		log.Fatal("Failed to bind to port 4221")
-	}
-	defer l.Close()
-
-	conn, err := l.Accept()
-	defer conn.Close()
-	if err != nil {
-		log.Panic("Error accepting connection: ", err.Error())
-	}
-
+func handleRequest(conn net.Conn) error {
 	scanner := bufio.NewScanner(conn)
-	if err != nil {
-		log.Panic("Error reading from connection")
-	}
-	// don't need to read anything except the start line at this point
+	// we should be able to scan at least one line
 	if !scanner.Scan() {
-		log.Panic("Could not read from connection: ", scanner.Err())
+		return fmt.Errorf("read from connection: %w", scanner.Err())
 	}
 	// startLine would look like "GET /index.html HTTP/1.1"
 	startLine := scanner.Text()
@@ -85,6 +67,9 @@ func main() {
 		key := h[0]
 		value := h[1]
 		headers[key] = value
+	}
+	if scanner.Err() != nil {
+		return fmt.Errorf("read headers from connection: %w", scanner.Err())
 	}
 
 	if strings.HasPrefix(requestPath, "/echo/") {
@@ -112,4 +97,33 @@ func main() {
 		response := HTTPResponse{status: 404, reason: "Not Found"}
 		conn.Write([]byte(response.Bytes()))
 	}
+	return nil
+}
+
+func main() {
+	l, err := net.Listen("tcp", "0.0.0.0:4221")
+	if err != nil {
+		log.Fatal("Failed to bind to port 4221")
+	}
+	defer l.Close()
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			// don't get blocked on logging
+			go func() {
+				log.Print("Error accepting connection: ", err.Error())
+			}()
+			continue
+		}
+
+		go func() {
+			defer conn.Close()
+			err := handleRequest(conn)
+			if err != nil {
+				log.Printf("Error handling request: %s", err)
+			}
+		}()
+	}
+
 }
