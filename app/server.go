@@ -47,14 +47,65 @@ func (h HTTPResponseHead) Bytes() []byte {
 	return result.Bytes()
 }
 
-var okResponse = HTTPResponseHead{status: 200, reason: "OK"}
-var createdResponse = HTTPResponseHead{status: 201, reason: "Created"}
-var notFoundResponse = HTTPResponseHead{status: 404, reason: "Not Found"}
-var errorResponse = HTTPResponseHead{status: 500, reason: "Internal Server Error"}
+var (
+	okResponse       = HTTPResponseHead{status: 200, reason: "OK"}
+	createdResponse  = HTTPResponseHead{status: 201, reason: "Created"}
+	notFoundResponse = HTTPResponseHead{status: 404, reason: "Not Found"}
+	errorResponse    = HTTPResponseHead{status: 500, reason: "Internal Server Error"}
+)
 
 const filesEndpoint = "/files/"
 
-func handleRequest(conn net.Conn, directory string) error {
+type FileServer struct {
+	Address   string
+	Directory string
+	listener  net.Listener
+}
+
+// Start only returns an error if the server could not start listening for
+// requests.
+func (s *FileServer) Start() error {
+	l, err := net.Listen("tcp", s.Address)
+	if err != nil {
+		return err
+	}
+	s.listener = l
+	defer s.listener.Close()
+
+	if s.Directory == "" {
+		s.Directory = "./"
+	}
+
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			// don't get blocked on logging
+			go func() {
+				log.Print("FileServer failed to accept connection: ", err.Error())
+			}()
+			continue
+		}
+
+		go func() {
+			defer conn.Close()
+			err := s.handleRequest(conn)
+			if err != nil {
+				log.Printf("error handling FileServer request: %s", err)
+				// TODO: is this where we should send the 500 response?
+				_, err := conn.Write(errorResponse.Bytes())
+				if err != nil {
+					log.Printf("FileServer failed to send 500 response: %s", err)
+				}
+			}
+		}()
+	}
+}
+
+func (s *FileServer) Close() error {
+	return fmt.Errorf("close server: %w", s.listener.Close())
+}
+
+func (s *FileServer) handleRequest(conn net.Conn) error {
 	buf := bufio.NewReader(conn)
 	startLine, err := buf.ReadString('\n')
 	// we should be able to scan at least one line
@@ -87,7 +138,7 @@ func handleRequest(conn net.Conn, directory string) error {
 
 	if method == "POST" && strings.HasPrefix(requestPath, filesEndpoint) {
 		fileName := requestPath[len(filesEndpoint):]
-		filePath := path.Join(directory, fileName)
+		filePath := path.Join(s.Directory, fileName)
 		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return err
@@ -130,7 +181,7 @@ func handleRequest(conn net.Conn, directory string) error {
 		}
 	} else if strings.HasPrefix(requestPath, filesEndpoint) {
 		fileName := requestPath[len(filesEndpoint):]
-		filePath := path.Join(directory, fileName)
+		filePath := path.Join(s.Directory, fileName)
 		file, err := os.Open(filePath)
 		if errors.Is(err, fs.ErrNotExist) {
 			conn.Write(notFoundResponse.Bytes())
@@ -192,34 +243,12 @@ func main() {
 	directory := flag.String("directory", ".", "Directory to serve.")
 	flag.Parse()
 
-	l, err := net.Listen("tcp", "0.0.0.0:4221")
+	s := FileServer{
+		Address:   "0.0.0.0:4221",
+		Directory: *directory,
+	}
+	err := s.Start()
 	if err != nil {
-		log.Fatal("Failed to bind to port 4221")
+		log.Printf("Could not start server: %s", err)
 	}
-	defer l.Close()
-
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			// don't get blocked on logging
-			go func() {
-				log.Print("Error accepting connection: ", err.Error())
-			}()
-			continue
-		}
-
-		go func() {
-			defer conn.Close()
-			err := handleRequest(conn, *directory)
-			if err != nil {
-				log.Printf("Error handling request: %s", err)
-				// TODO: is this where we should send the 500 response?
-				_, err := conn.Write(errorResponse.Bytes())
-				if err != nil {
-					log.Printf("Failed to send 500 response: %s", err)
-				}
-			}
-		}()
-	}
-
 }
