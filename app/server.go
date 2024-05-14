@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -47,22 +48,32 @@ func (h HTTPResponseHead) Bytes() []byte {
 }
 
 var okResponse = HTTPResponseHead{status: 200, reason: "OK"}
+var createdResponse = HTTPResponseHead{status: 201, reason: "Created"}
 var notFoundResponse = HTTPResponseHead{status: 404, reason: "Not Found"}
+var errorResponse = HTTPResponseHead{status: 500, reason: "Internal Server Error"}
+
+const filesEndpoint = "/files/"
 
 func handleRequest(conn net.Conn, directory string) error {
-	scanner := bufio.NewScanner(conn)
+	buf := bufio.NewReader(conn)
+	startLine, err := buf.ReadString('\n')
 	// we should be able to scan at least one line
-	if !scanner.Scan() {
-		return fmt.Errorf("read from connection: %w", scanner.Err())
+	if err != nil {
+		return fmt.Errorf("read from connection: %w", err)
 	}
+	startLine = strings.TrimRight(startLine, "\r\n")
 	// startLine would look like "GET /index.html HTTP/1.1"
-	startLine := scanner.Text()
 	sl := strings.Split(startLine, " ")
+	method := sl[0]
 	requestPath := sl[1]
 
 	headers := make(map[string]string)
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := buf.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read headers from connection: %w", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
 		// there are no more headers to read
 		if line == "" {
 			break
@@ -73,11 +84,36 @@ func handleRequest(conn net.Conn, directory string) error {
 		value := h[1]
 		headers[key] = value
 	}
-	if scanner.Err() != nil {
-		return fmt.Errorf("read headers from connection: %w", scanner.Err())
-	}
 
-	if strings.HasPrefix(requestPath, "/echo/") {
+	if method == "POST" && strings.HasPrefix(requestPath, filesEndpoint) {
+		fileName := requestPath[len(filesEndpoint):]
+		filePath := path.Join(directory, fileName)
+		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		contentLength, ok := headers["Content-Length"]
+		if !ok {
+			return fmt.Errorf("no 'Content-Length' header in request")
+		}
+		length, err := strconv.Atoi(contentLength)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.CopyN(file, buf, int64(length))
+		if err != nil {
+			return err
+		}
+
+		_, err = conn.Write(createdResponse.Bytes())
+		if err != nil {
+			return err
+		}
+
+	} else if strings.HasPrefix(requestPath, "/echo/") {
 		arg := requestPath[len("/echo/"):]
 		headers := make(map[string]string, 2)
 		headers["Content-Type"] = "text/plain"
@@ -92,8 +128,8 @@ func handleRequest(conn net.Conn, directory string) error {
 		if err != nil {
 			return err
 		}
-	} else if strings.HasPrefix(requestPath, "/files/") {
-		fileName := requestPath[len("/files/"):]
+	} else if strings.HasPrefix(requestPath, filesEndpoint) {
+		fileName := requestPath[len(filesEndpoint):]
 		filePath := path.Join(directory, fileName)
 		file, err := os.Open(filePath)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -177,6 +213,11 @@ func main() {
 			err := handleRequest(conn, *directory)
 			if err != nil {
 				log.Printf("Error handling request: %s", err)
+				// TODO: is this where we should send the 500 response?
+				_, err := conn.Write(errorResponse.Bytes())
+				if err != nil {
+					log.Printf("Failed to send 500 response: %s", err)
+				}
 			}
 		}()
 	}
