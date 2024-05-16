@@ -21,10 +21,7 @@ type ResponseHead struct {
 	Protocol string
 	Status   int
 	Reason   string
-	// Headers stores keys in lower case, since RFC9110 says they're case
-	// insensitive. In a more serious project, this could warrant its own type
-	// with Get() and Set() methods.
-	Headers map[string]string
+	Headers  map[string]string
 }
 
 // Bytes returns all the bytes of an HTTP response except the body.
@@ -52,11 +49,24 @@ func (r ResponseHead) Bytes() []byte {
 	return result.Bytes()
 }
 
+type Response struct {
+	Head ResponseHead
+	Body io.Reader
+}
+
+func (r Response) getReader() io.Reader {
+	headReader := bytes.NewBuffer(r.Head.Bytes())
+	if r.Body == nil {
+		return headReader
+	}
+	return io.MultiReader(headReader, r.Body)
+}
+
 var (
-	okResponse       = ResponseHead{Status: 200, Reason: "OK"}
-	createdResponse  = ResponseHead{Status: 201, Reason: "Created"}
-	notFoundResponse = ResponseHead{Status: 404, Reason: "Not Found"}
-	errorResponse    = ResponseHead{Status: 500, Reason: "Internal Server Error"}
+	okResponse       = Response{Head: ResponseHead{Status: 200, Reason: "OK"}}
+	createdResponse  = Response{Head: ResponseHead{Status: 201, Reason: "Created"}}
+	notFoundResponse = Response{Head: ResponseHead{Status: 404, Reason: "Not Found"}}
+	errorResponse    = Response{Head: ResponseHead{Status: 500, Reason: "Internal Server Error"}}
 )
 
 type RequestLine struct {
@@ -84,17 +94,22 @@ func parseRequestLine(line string) (RequestLine, error) {
 
 type Request struct {
 	RequestLine
+	// Headers stores keys in lower case, since RFC9110 says they're case
+	// insensitive. In a more serious project, this could warrant its own type
+	// with Get() and Set() methods to make this opaque to the user.
 	Headers map[string]string
-	Body    io.Reader
+	// Body is not guaranteed to throw an EOF
+	Body io.Reader
 }
 
-// body is not guaranteed to throw an EOF
-type HandlerFunc func(req Request) (response io.Reader, err error)
+type HandlerFunc func(Request) (Response, error)
 
 type endpointHandler struct {
 	prefix  string
 	handler HandlerFunc
 }
+
+type Middleware func(HandlerFunc) HandlerFunc
 
 // TODO: Add logger (e.g. should tell you which handler failed), middleware may
 // be the route to go for the next stage (compression)
@@ -108,6 +123,7 @@ type Server struct {
 	Address          string
 	listener         net.Listener
 	endPointHandlers []endpointHandler
+	middlewares      []Middleware
 }
 
 // RegisterHandler makes it so that the specified handler runs on any request
@@ -135,6 +151,10 @@ func (s *Server) RegisterHandler(endpointPrefix string, handler HandlerFunc) {
 	})
 }
 
+func (s *Server) RegisterMiddleware(m Middleware) {
+	s.middlewares = append(s.middlewares, m)
+}
+
 // Start only returns an error if the server could not start listening for
 // requests.
 func (s *Server) Start() error {
@@ -150,7 +170,7 @@ func (s *Server) Start() error {
 		if err != nil {
 			// don't get blocked on logging
 			go func() {
-				log.Print("FileServer failed to accept connection: ", err.Error())
+				log.Print("Server failed to accept connection: ", err.Error())
 			}()
 			continue
 		}
@@ -159,11 +179,11 @@ func (s *Server) Start() error {
 			defer conn.Close()
 			err := s.handleRequest(conn)
 			if err != nil {
-				log.Printf("error handling FileServer request: %s", err)
+				log.Printf("error handling Server request: %s", err)
 				// TODO: is this where we should send the 500 response?
-				_, err := conn.Write(errorResponse.Bytes())
+				_, err := io.Copy(conn, errorResponse.getReader())
 				if err != nil {
-					log.Printf("FileServer failed to send 500 response: %s", err)
+					log.Printf("Server failed to send 500 response: %s", err)
 				}
 			}
 		}()
@@ -203,7 +223,7 @@ func (s *Server) handleRequest(conn io.ReadWriter) error {
 	for {
 		line, err := buf.ReadString('\n')
 		if err != nil {
-			return fmt.Errorf("read headers: %w", err)
+			return fmt.Errorf("read request headers: %w", err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		// there are no more headers to read
@@ -218,22 +238,25 @@ func (s *Server) handleRequest(conn io.ReadWriter) error {
 	}
 
 	handler := getHandler(s.endPointHandlers, requestLine.Path)
-	if handler != nil {
-		response, err := handler(Request{requestLine, headers, buf})
+	if handler == nil {
+		// if no handler is found, return a 404
+		_, err = io.Copy(conn, notFoundResponse.getReader())
 		if err != nil {
-			return err
-		}
-		_, err = io.Copy(conn, response)
-		if err != nil {
-			return fmt.Errorf("write response: %w", err)
+			return fmt.Errorf("write 404 response: %w", err)
 		}
 		return nil
 	}
 
-	// if no handler is found, return a 404
-	_, err = conn.Write(notFoundResponse.Bytes())
+	for i := range s.middlewares {
+		handler = s.middlewares[i](handler)
+	}
+	response, err := handler(Request{requestLine, headers, buf})
 	if err != nil {
-		return fmt.Errorf("write 404 response: %w", err)
+		return err
+	}
+	_, err = io.Copy(conn, response.getReader())
+	if err != nil {
+		return fmt.Errorf("write response: %w", err)
 	}
 	return nil
 }
@@ -255,7 +278,7 @@ func (c *closesAtEOF) Read(buf []byte) (int, error) {
 }
 
 func getFilesEndpoint(directory string) HandlerFunc {
-	filesEndpoint := func(directory string, req Request) (io.Reader, error) {
+	filesEndpoint := func(directory string, req Request) (Response, error) {
 		fileName, err := parsePathArg(req.Path)
 		filePath := path.Join(directory, fileName)
 		// Normally we would respond that we don't support any methods besides GET
@@ -264,49 +287,49 @@ func getFilesEndpoint(directory string) HandlerFunc {
 		if req.Method != "POST" {
 			file, err := os.Open(filePath)
 			if errors.Is(err, fs.ErrNotExist) {
-				return bytes.NewBuffer(notFoundResponse.Bytes()), nil
+				return notFoundResponse, nil
 			}
 			if err != nil {
-				return nil, err
+				return Response{}, err
 			}
 			stats, err := os.Stat(filePath)
 			if err != nil {
-				return nil, err
+				return Response{}, err
 			}
 
 			headers := make(map[string]string, 2)
 			headers["content-type"] = "application/octet-stream"
 			headers["content-length"] = fmt.Sprintf("%d", stats.Size())
-			head := okResponse
-			head.Headers = headers
-			headBuf := bytes.NewBuffer(head.Bytes())
-			return io.MultiReader(headBuf, &closesAtEOF{file}), nil
+			response := okResponse
+			response.Head.Headers = headers
+			response.Body = &closesAtEOF{file}
+			return response, nil
 		}
 
 		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return nil, err
+			return Response{}, err
 		}
 		defer file.Close()
 
 		contentLength, ok := req.Headers["content-length"]
 		if !ok {
-			return nil, errors.New("no 'Content-Length' header in request")
+			return Response{}, errors.New("no 'Content-Length' header in request")
 		}
 		length, err := strconv.Atoi(contentLength)
 		if err != nil {
-			return nil, err
+			return Response{}, err
 		}
 
 		_, err = io.CopyN(file, req.Body, int64(length))
 		if err != nil {
-			return nil, fmt.Errorf("write '%s': %w", filePath, err)
+			return Response{}, fmt.Errorf("write '%s': %w", filePath, err)
 		}
 
-		return bytes.NewBuffer(createdResponse.Bytes()), nil
+		return createdResponse, nil
 	}
 
-	return func(req Request) (io.Reader, error) {
+	return func(req Request) (Response, error) {
 		return filesEndpoint(directory, req)
 	}
 }
@@ -314,22 +337,20 @@ func getFilesEndpoint(directory string) HandlerFunc {
 // NOTE: Proper handlers would probably return a 405 for unsupported methods on
 // an endpoint.
 
-func rootEndpoint(req Request) (io.Reader, error) {
-	r := bytes.NewBuffer(okResponse.Bytes())
-	return r, nil
+func rootEndpoint(req Request) (Response, error) {
+	return okResponse, nil
 }
 
-func userAgentEndpoint(req Request) (io.Reader, error) {
+func userAgentEndpoint(req Request) (Response, error) {
 	// it's okay if it's not in headers, we'll just get ""
 	userAgent := req.Headers["user-agent"]
 	headers := make(map[string]string, 2)
 	headers["Content-Type"] = "text/plain"
 	headers["Content-Length"] = fmt.Sprintf("%d", len(userAgent))
-	head := okResponse
-	head.Headers = headers
-	headBuf := bytes.NewBuffer(head.Bytes())
-	body := bytes.NewBufferString(userAgent)
-	return io.MultiReader(headBuf, body), nil
+	response := okResponse
+	response.Head.Headers = headers
+	response.Body = bytes.NewBufferString(userAgent)
+	return response, nil
 }
 
 func parsePathArg(requestPath string) (string, error) {
@@ -347,19 +368,33 @@ func parsePathArg(requestPath string) (string, error) {
 	return arg, nil
 }
 
-func echoEndpoint(req Request) (io.Reader, error) {
+func echoEndpoint(req Request) (Response, error) {
 	arg, err := parsePathArg(req.Path)
 	if err != nil {
-		return nil, err
+		return Response{}, err
 	}
 	headers := make(map[string]string, 2)
 	headers["Content-Type"] = "text/plain"
 	headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
-	head := okResponse
-	head.Headers = headers
-	headBuf := bytes.NewBuffer(head.Bytes())
-	body := bytes.NewBufferString(arg)
-	return io.MultiReader(headBuf, body), nil
+	response := okResponse
+	response.Head.Headers = headers
+	response.Body = bytes.NewBufferString(arg)
+	return response, nil
+}
+
+func gzipMiddleware(handler HandlerFunc) HandlerFunc {
+	middleware := func(request Request) (Response, error) {
+		encoding := request.Headers["accept-encoding"]
+		response, err := handler(request)
+		if err != nil {
+			return Response{}, err
+		}
+		if encoding == "gzip" {
+			response.Head.Headers["Content-Encoding"] = "gzip"
+		}
+		return response, nil
+	}
+	return middleware
 }
 
 func main() {
