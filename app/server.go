@@ -390,6 +390,9 @@ func gzipMiddleware(handler HandlerFunc) HandlerFunc {
 			return Response{}, err
 		}
 		if encoding == "gzip" {
+			if response.Head.Headers == nil {
+				response.Head.Headers = make(map[string]string, 1)
+			}
 			response.Head.Headers["Content-Encoding"] = "gzip"
 		}
 		return response, nil
@@ -409,6 +412,9 @@ func main() {
 	// added / at the end since this endpoint takes a path argument
 	s.RegisterHandler("/echo/", echoEndpoint)
 	s.RegisterHandler("/files/", getFilesEndpoint(*directory))
+
+	s.RegisterMiddleware(gzipMiddleware)
+
 	err := s.Start()
 	if err != nil {
 		log.Printf("Could not start server: %s", err)
