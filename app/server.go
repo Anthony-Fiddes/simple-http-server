@@ -105,6 +105,9 @@ type Request struct {
 
 // cleanup must be run even if the handler returned an error. It should be run
 // after the Response body has been consumed.
+//
+// If I were to retry this challenge, I would think on how to rearchitect this
+// handler to remove the cleanup function, since it's a bit awkward.
 type Handler func(Request) (r Response, cleanup func(), err error)
 
 type endpointHandler struct {
