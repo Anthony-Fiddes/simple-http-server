@@ -382,14 +382,28 @@ func echoEndpoint(req Request) (Response, error) {
 	return response, nil
 }
 
+// gzipMiddleware would conflict with another middleware that attempts to choose
+// a compression scheme from Accept-Encoding. It's acceptable here since we know
+// that we're not interested in handling any other schemes.
 func gzipMiddleware(handler HandlerFunc) HandlerFunc {
 	middleware := func(request Request) (Response, error) {
-		encoding := request.Headers["accept-encoding"]
+		acceptEncoding := request.Headers["accept-encoding"]
 		response, err := handler(request)
 		if err != nil {
 			return Response{}, err
 		}
-		if encoding == "gzip" {
+
+		gzipPresent := false
+		options := strings.Split(acceptEncoding, ",")
+		for i := range options {
+			options[i] = strings.TrimSpace(options[i])
+			if options[i] == "gzip" {
+				gzipPresent = true
+				break
+			}
+		}
+
+		if gzipPresent {
 			if response.Head.Headers == nil {
 				response.Head.Headers = make(map[string]string, 1)
 			}
