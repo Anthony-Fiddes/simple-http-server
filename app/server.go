@@ -117,11 +117,11 @@ type endpointHandler struct {
 
 type Middleware func(Handler) Handler
 
-// TODO: Add logger (e.g. should tell you which handler failed), middleware may
-// be the route to go for the next stage (compression)
-//
-// TODO: Add a deadline so that net conns don't just block forever if there's
-// some kind of error.
+// NOTE: Adding a deadline so that net conns don't just block forever if there's
+// some kind of error would be a good idea.
+
+// NOTE: It would also make a lot of sense to adda logger to the Server struct
+// or some kind of logging middleware.
 
 // Server is a basic HTTP server that can be configured by registering handlers
 // for different endpoints (i.e. request paths that begin with a given prefix).
@@ -274,6 +274,10 @@ func (s *Server) Close() error {
 	return fmt.Errorf("close server: %w", s.listener.Close())
 }
 
+// NOTE: Proper handlers would probably return a 405 for unsupported methods on
+// an endpoint. One way to work around this in future would be to make
+// RegisterHandler also take the intended method as a parameter.
+
 func getFilesEndpoint(directory string) Handler {
 	filesEndpoint := func(directory string, req Request) (Response, func(), error) {
 		fileName, err := parsePathArg(req.Path)
@@ -332,9 +336,6 @@ func getFilesEndpoint(directory string) Handler {
 		return filesEndpoint(directory, req)
 	}
 }
-
-// NOTE: Proper handlers would probably return a 405 for unsupported methods on
-// an endpoint.
 
 func rootEndpoint(req Request) (Response, func(), error) {
 	return okResponse, nil, nil
