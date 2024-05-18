@@ -2,6 +2,8 @@ This is a simple HTTP server that I wrote while doing [Code Crafter's "Build You
 Own HTTP server"
 challenge](https://backend.codecrafters.io/progress/http-server/911cdef7-b68f-4789-b2b9-397ccfa2363d).
 
+You can see how it might be used by taking a look at [./run.sh](run.sh)
+
 From their original README:
 
 [HTTP](https://en.wikipedia.org/wiki/Hypertext_Transfer_Protocol) is the

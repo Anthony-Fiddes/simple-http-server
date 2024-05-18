@@ -300,9 +300,10 @@ func getFilesEndpoint(directory string) Handler {
 				return Response{}, cleanup, err
 			}
 
-			headers := make(map[string]string, 2)
-			headers["content-type"] = "application/octet-stream"
-			headers["content-length"] = fmt.Sprintf("%d", stats.Size())
+			headers := make(map[string]string, 3)
+			headers["Content-Type"] = "application/octet-stream"
+			headers["Content-Length"] = fmt.Sprintf("%d", stats.Size())
+			headers["Connection"] = "close"
 			response := okResponse
 			response.Head.Headers = headers
 			response.Body = file
@@ -328,8 +329,12 @@ func getFilesEndpoint(directory string) Handler {
 		if err != nil {
 			return Response{}, nil, fmt.Errorf("write '%s': %w", filePath, err)
 		}
+		headers := make(map[string]string, 1)
+		headers["Connection"] = "close"
+		response := createdResponse
+		response.Head.Headers = headers
 
-		return createdResponse, nil, nil
+		return response, nil, nil
 	}
 
 	return func(req Request) (Response, func(), error) {
@@ -344,9 +349,10 @@ func rootEndpoint(req Request) (Response, func(), error) {
 func userAgentEndpoint(req Request) (Response, func(), error) {
 	// it's okay if it's not in headers, we'll just get ""
 	userAgent := req.Headers["user-agent"]
-	headers := make(map[string]string, 2)
+	headers := make(map[string]string, 3)
 	headers["Content-Type"] = "text/plain"
 	headers["Content-Length"] = fmt.Sprintf("%d", len(userAgent))
+	headers["Connection"] = "close"
 	response := okResponse
 	response.Head.Headers = headers
 	response.Body = bytes.NewBufferString(userAgent)
@@ -373,9 +379,10 @@ func echoEndpoint(req Request) (Response, func(), error) {
 	if err != nil {
 		return Response{}, nil, err
 	}
-	headers := make(map[string]string, 2)
+	headers := make(map[string]string, 3)
 	headers["Content-Type"] = "text/plain"
 	headers["Content-Length"] = fmt.Sprintf("%d", len(arg))
+	headers["Connection"] = "close"
 	response := okResponse
 	response.Head.Headers = headers
 	response.Body = bytes.NewBufferString(arg)
@@ -391,6 +398,10 @@ func gzipMiddleware(handler Handler) Handler {
 		response, cleanup, err := handler(request)
 		if err != nil {
 			return Response{}, cleanup, err
+		}
+		// No need to do anything if the response has no body
+		if response.Body == nil {
+			return response, cleanup, err
 		}
 
 		gzipPresent := false
@@ -452,8 +463,13 @@ func main() {
 	directory := flag.String("directory", ".", "Directory to serve.")
 	flag.Parse()
 
+	address := flag.Arg(0)
+	if address == "" {
+		log.Fatalf("Usage: %s <address>\n\naddress is the address and port to listen on. E.g. localhost:8080", path.Base(os.Args[0]))
+	}
+
 	s := Server{
-		Address: "0.0.0.0:4221",
+		Address: address,
 	}
 	s.RegisterHandler("/", rootEndpoint)
 	s.RegisterHandler("/user-agent", userAgentEndpoint)
