@@ -411,15 +411,15 @@ func gzipMiddleware(handler Handler) Handler {
 		response.Head.Headers["Content-Encoding"] = "gzip"
 
 		tempFile, err := os.CreateTemp(os.TempDir(), "Server-gzip-cache")
+		if err != nil {
+			return Response{}, cleanup, fmt.Errorf("create temp file to cache compressed gzip response body: %w", err)
+		}
 		newCleanup := func() {
 			if cleanup != nil {
 				cleanup()
 			}
 			tempFile.Close()
 			os.Remove(tempFile.Name())
-		}
-		if err != nil {
-			return Response{}, newCleanup, fmt.Errorf("create temp file to cache compressed gzip response body: %w", err)
 		}
 		gw := gzip.NewWriter(tempFile)
 		_, err = io.Copy(gw, response.Body)
