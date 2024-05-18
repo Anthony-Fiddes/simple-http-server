@@ -1,5 +1,3 @@
-[![progress-banner](https://backend.codecrafters.io/progress/http-server/911cdef7-b68f-4789-b2b9-397ccfa2363d)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
-
 This is a simple HTTP server that I wrote while doing [Code Crafter's "Build Your
 Own HTTP server"
 challenge](https://backend.codecrafters.io/progress/http-server/911cdef7-b68f-4789-b2b9-397ccfa2363d).
