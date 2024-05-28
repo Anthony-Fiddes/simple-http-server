@@ -52,7 +52,8 @@ func (r ResponseHead) Bytes() []byte {
 
 type Response struct {
 	Head ResponseHead
-	Body io.Reader
+	// Body should be closed after it's consumed
+	Body io.ReadCloser
 }
 
 func (r Response) getReader() io.Reader {
@@ -108,7 +109,7 @@ type Request struct {
 //
 // If I were to retry this challenge, I would think on how to rearchitect this
 // handler to remove the cleanup function, since it's a bit awkward.
-type Handler func(Request) (r Response, cleanup func(), err error)
+type Handler func(Request) (r Response, err error)
 
 type endpointHandler struct {
 	prefix  string
@@ -120,7 +121,7 @@ type Middleware func(Handler) Handler
 // NOTE: Adding a deadline so that net conns don't just block forever if there's
 // some kind of error would be a good idea.
 
-// NOTE: It would also make a lot of sense to adda logger to the Server struct
+// NOTE: It would also make a lot of sense to add a logger to the Server struct
 // or some kind of logging middleware.
 
 // Server is a basic HTTP server that can be configured by registering handlers
@@ -256,16 +257,20 @@ func (s *Server) handleRequest(conn io.ReadWriter) error {
 	for i := range s.middlewares {
 		handler = s.middlewares[i](handler)
 	}
-	response, cleanup, err := handler(Request{requestLine, headers, buf})
-	if cleanup != nil {
-		defer cleanup()
-	}
+	response, err := handler(Request{requestLine, headers, buf})
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(conn, response.getReader())
+	_, err = io.Copy(conn, bytes.NewReader(response.Head.Bytes()))
 	if err != nil {
-		return fmt.Errorf("write response: %w", err)
+		return fmt.Errorf("write response head: %w", err)
+	}
+	if response.Body != nil {
+		defer response.Body.Close()
+		_, err = io.Copy(conn, response.Body)
+		if err != nil {
+			return fmt.Errorf("write response body: %w", err)
+		}
 	}
 	return nil
 }
@@ -279,7 +284,7 @@ func (s *Server) Close() error {
 // RegisterHandler also take the intended method as a parameter.
 
 func getFilesEndpoint(directory string) Handler {
-	filesEndpoint := func(directory string, req Request) (Response, func(), error) {
+	filesEndpoint := func(directory string, req Request) (Response, error) {
 		fileName, err := parsePathArg(req.Path)
 		filePath := path.Join(directory, fileName)
 		// Normally we would respond that we don't support any methods besides GET
@@ -288,16 +293,15 @@ func getFilesEndpoint(directory string) Handler {
 		if req.Method != "POST" {
 			file, err := os.Open(filePath)
 			if errors.Is(err, fs.ErrNotExist) {
-				return notFoundResponse, nil, nil
+				return notFoundResponse, nil
 			}
 			if err != nil {
-				return Response{}, nil, err
+				return Response{}, err
 			}
-			cleanup := func() { file.Close() }
 
 			stats, err := os.Stat(filePath)
 			if err != nil {
-				return Response{}, cleanup, err
+				return Response{}, err
 			}
 
 			headers := make(map[string]string, 3)
@@ -307,46 +311,46 @@ func getFilesEndpoint(directory string) Handler {
 			response := okResponse
 			response.Head.Headers = headers
 			response.Body = file
-			return response, cleanup, nil
+			return response, nil
 		}
 
 		file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return Response{}, nil, err
+			return Response{}, err
 		}
 		defer file.Close()
 
 		contentLength, ok := req.Headers["content-length"]
 		if !ok {
-			return Response{}, nil, errors.New("no 'Content-Length' header in request")
+			return Response{}, errors.New("no 'Content-Length' header in request")
 		}
 		length, err := strconv.Atoi(contentLength)
 		if err != nil {
-			return Response{}, nil, err
+			return Response{}, err
 		}
 
 		_, err = io.CopyN(file, req.Body, int64(length))
 		if err != nil {
-			return Response{}, nil, fmt.Errorf("write '%s': %w", filePath, err)
+			return Response{}, fmt.Errorf("write '%s': %w", filePath, err)
 		}
 		headers := make(map[string]string, 1)
 		headers["Connection"] = "close"
 		response := createdResponse
 		response.Head.Headers = headers
 
-		return response, nil, nil
+		return response, nil
 	}
 
-	return func(req Request) (Response, func(), error) {
+	return func(req Request) (Response, error) {
 		return filesEndpoint(directory, req)
 	}
 }
 
-func rootEndpoint(req Request) (Response, func(), error) {
-	return okResponse, nil, nil
+func rootEndpoint(req Request) (Response, error) {
+	return okResponse, nil
 }
 
-func userAgentEndpoint(req Request) (Response, func(), error) {
+func userAgentEndpoint(req Request) (Response, error) {
 	// it's okay if it's not in headers, we'll just get ""
 	userAgent := req.Headers["user-agent"]
 	headers := make(map[string]string, 3)
@@ -355,8 +359,9 @@ func userAgentEndpoint(req Request) (Response, func(), error) {
 	headers["Connection"] = "close"
 	response := okResponse
 	response.Head.Headers = headers
-	response.Body = bytes.NewBufferString(userAgent)
-	return response, nil, nil
+	bodyBytes := bytes.NewBufferString(userAgent)
+	response.Body = io.NopCloser(bodyBytes)
+	return response, nil
 }
 
 func parsePathArg(requestPath string) (string, error) {
@@ -374,10 +379,10 @@ func parsePathArg(requestPath string) (string, error) {
 	return arg, nil
 }
 
-func echoEndpoint(req Request) (Response, func(), error) {
+func echoEndpoint(req Request) (Response, error) {
 	arg, err := parsePathArg(req.Path)
 	if err != nil {
-		return Response{}, nil, err
+		return Response{}, err
 	}
 	headers := make(map[string]string, 3)
 	headers["Content-Type"] = "text/plain"
@@ -385,23 +390,37 @@ func echoEndpoint(req Request) (Response, func(), error) {
 	headers["Connection"] = "close"
 	response := okResponse
 	response.Head.Headers = headers
-	response.Body = bytes.NewBufferString(arg)
-	return response, nil, nil
+	bodyBytes := bytes.NewBufferString(arg)
+	response.Body = io.NopCloser(bodyBytes)
+	return response, nil
+}
+
+type tempFile struct {
+	*os.File
+}
+
+func (t *tempFile) Close() error {
+	t.File.Close()
+	err := os.Remove(t.Name())
+	if err != nil {
+		return fmt.Errorf("remove temp file %s: %w", t.Name(), err)
+	}
+	return nil
 }
 
 // gzipMiddleware would conflict with another middleware that attempts to choose
 // a compression scheme from Accept-Encoding. It's acceptable here since we know
 // that we're not interested in handling any other schemes.
 func gzipMiddleware(handler Handler) Handler {
-	middleware := func(request Request) (Response, func(), error) {
+	middleware := func(request Request) (Response, error) {
 		acceptEncoding := request.Headers["accept-encoding"]
-		response, cleanup, err := handler(request)
+		response, err := handler(request)
 		if err != nil {
-			return Response{}, cleanup, err
+			return Response{}, err
 		}
 		// No need to do anything if the response has no body
 		if response.Body == nil {
-			return response, cleanup, err
+			return response, err
 		}
 
 		gzipPresent := false
@@ -414,7 +433,7 @@ func gzipMiddleware(handler Handler) Handler {
 			}
 		}
 		if !gzipPresent {
-			return response, cleanup, nil
+			return response, nil
 		}
 
 		if response.Head.Headers == nil {
@@ -422,39 +441,33 @@ func gzipMiddleware(handler Handler) Handler {
 		}
 		response.Head.Headers["Content-Encoding"] = "gzip"
 
-		tempFile, err := os.CreateTemp(os.TempDir(), "Server-gzip-cache")
+		t, err := os.CreateTemp(os.TempDir(), "Server-gzip-cache")
+		tmp := &tempFile{t}
 		if err != nil {
-			return Response{}, cleanup, fmt.Errorf("create temp file to cache compressed gzip response body: %w", err)
+			return Response{}, fmt.Errorf("create temp file to cache compressed gzip response body: %w", err)
 		}
-		newCleanup := func() {
-			if cleanup != nil {
-				cleanup()
-			}
-			tempFile.Close()
-			os.Remove(tempFile.Name())
-		}
-		gw := gzip.NewWriter(tempFile)
+		gw := gzip.NewWriter(tmp)
 		_, err = io.Copy(gw, response.Body)
 		if err != nil {
-			return Response{}, newCleanup, fmt.Errorf("compress response body and write to %s: %w", tempFile.Name(), err)
+			return Response{}, fmt.Errorf("compress response body and write to %s: %w", tmp.Name(), err)
 		}
 		err = gw.Close()
 		if err != nil {
-			return Response{}, newCleanup, fmt.Errorf("compress response body and write to %s: %w", tempFile.Name(), err)
+			return Response{}, fmt.Errorf("compress response body and write to %s: %w", tmp.Name(), err)
 		}
-		_, err = tempFile.Seek(0, 0)
+		_, err = tmp.Seek(0, 0)
 		if err != nil {
-			return Response{}, newCleanup, fmt.Errorf("rewind %s: %w", tempFile.Name(), err)
+			return Response{}, fmt.Errorf("rewind %s: %w", tmp.Name(), err)
 		}
-		response.Body = tempFile
+		response.Body = tmp
 
-		stats, err := os.Stat(tempFile.Name())
+		stats, err := os.Stat(tmp.Name())
 		if err != nil {
-			return Response{}, newCleanup, err
+			return Response{}, err
 		}
 		compressedSize := strconv.Itoa(int(stats.Size()))
 		response.Head.Headers["Content-Length"] = compressedSize
-		return response, newCleanup, err
+		return response, err
 	}
 	return middleware
 }
