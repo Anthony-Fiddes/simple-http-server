@@ -1,7 +1,10 @@
 #!/bin/sh
-go run . localhost:4221 --directory . &
+go build .
+./simple-http-server localhost:4221 --directory . &
 SERVER_PID=$!
 SEPARATOR="\n\n=========================\n\n"
+# without this, bash starts curl faster than the server is ready to respond!
+sleep 1
 
 # Get an idea for some basic stuff the server can do
 
@@ -19,4 +22,5 @@ echo "Either of the above can be gzip encoded (note that curl will not print bin
 echo
 curl -vvv -X GET http://localhost:4221/files/README.md -H "Accept-Encoding: gzip"
 
+rm ./simple-http-server
 kill $SERVER_PID
