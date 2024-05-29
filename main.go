@@ -56,14 +56,6 @@ type Response struct {
 	Body io.ReadCloser
 }
 
-func (r Response) getReader() io.Reader {
-	headReader := bytes.NewBuffer(r.Head.Bytes())
-	if r.Body == nil {
-		return headReader
-	}
-	return io.MultiReader(headReader, r.Body)
-}
-
 var (
 	okResponse       = Response{Head: ResponseHead{Status: 200, Reason: "OK"}}
 	createdResponse  = Response{Head: ResponseHead{Status: 201, Reason: "Created"}}
@@ -183,7 +175,7 @@ func (s *Server) Start() error {
 			if err != nil {
 				log.Printf("error handling Server request: %s", err)
 				// TODO: is this where we should send the 500 response?
-				_, err := io.Copy(conn, errorResponse.getReader())
+				_, err := io.Copy(conn, bytes.NewReader(errorResponse.Head.Bytes()))
 				if err != nil {
 					log.Printf("Server failed to send 500 response: %s", err)
 				}
@@ -242,7 +234,7 @@ func (s *Server) handleRequest(conn io.ReadWriter) error {
 	handler := getHandler(s.endPointHandlers, requestLine.Path)
 	if handler == nil {
 		// if no handler is found, return a 404
-		_, err = io.Copy(conn, notFoundResponse.getReader())
+		_, err = io.Copy(conn, bytes.NewReader(notFoundResponse.Head.Bytes()))
 		if err != nil {
 			return fmt.Errorf("write 404 response: %w", err)
 		}
